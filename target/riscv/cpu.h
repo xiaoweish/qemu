@@ -205,6 +205,7 @@ struct CPUArchState {
     bool software_seip;
 
     uint64_t miclaim;
+    uint64_t mintstatus; /* clic-spec */
 
     uint64_t mie;
     uint64_t mideleg;
@@ -373,6 +374,8 @@ struct CPUArchState {
     QEMUTimer *stimer; /* Internal timer for S-mode interrupt */
     QEMUTimer *vstimer; /* Internal timer for VS-mode interrupt */
     bool vstime_irq;
+
+    void *clic;       /* clic interrupt controller */
 
     hwaddr kernel_addr;
     hwaddr fdt_addr;
