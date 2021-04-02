@@ -208,6 +208,7 @@ struct CPUArchState {
     uint64_t miclaim;
     uint64_t mintstatus; /* clic-spec */
     target_ulong mintthresh; /* clic-spec */
+    target_ulong mclicbase; /* clic-spec */
 
     uint64_t mie;
     uint64_t mideleg;
