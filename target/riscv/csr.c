@@ -30,6 +30,10 @@
 #include "qemu/guest-random.h"
 #include "qapi/error.h"
 
+#if !defined(CONFIG_USER_ONLY)
+#include "hw/intc/riscv_clic.h"
+#endif
+
 /* CSR function table public API */
 void riscv_get_csr_ops(int csrno, riscv_csr_operations *ops)
 {
@@ -2363,6 +2367,14 @@ static RISCVException write_sstatus(CPURISCVState *env, int csrno,
     return write_mstatus(env, CSR_MSTATUS, newval);
 }
 
+// static RISCVException write_vsie(CPURISCVState *env, int csrno,
+//                                  target_ulong val)
+// {
+//     /* Shift the S bits to their VS bit location in mie */
+//     target_ulong newval = (env->mie & ~VS_MODE_INTERRUPTS) |
+//                           ((val << 1) & env->hideleg & VS_MODE_INTERRUPTS);
+//     return write_mie(env, CSR_MIE, newval);
+// }
 static RISCVException rmw_vsie64(CPURISCVState *env, int csrno,
                                  uint64_t *ret_val,
                                  uint64_t new_val, uint64_t wr_mask)
@@ -2426,7 +2438,15 @@ static RISCVException rmw_sie64(CPURISCVState *env, int csrno,
         }
         ret = rmw_vsie64(env, CSR_VSIE, ret_val, new_val, wr_mask);
     } else {
-        ret = rmw_mie64(env, csrno, ret_val, new_val, wr_mask & mask);
+        if (riscv_clic_is_clic_mode(env)) {
+            /* Writes to xie will be ignored and will not trap. (Section 4.3) */
+            if (ret_val) {
+            /* The xie CSR appears hardwired to zero in CLIC mode. (Section 4.3) */
+                *ret_val = 0;
+            }
+        } else {
+            ret = rmw_mie64(env, csrno, ret_val, new_val, wr_mask & mask);
+        }
     }
 
     if (ret_val) {
@@ -2450,7 +2470,6 @@ static RISCVException rmw_sie(CPURISCVState *env, int csrno,
 
     return ret;
 }
-
 static RISCVException rmw_sieh(CPURISCVState *env, int csrno,
                                target_ulong *ret_val,
                                target_ulong new_val, target_ulong wr_mask)
