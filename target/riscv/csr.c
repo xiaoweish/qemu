@@ -2269,7 +2269,12 @@ static RISCVException rmw_mip64(CPURISCVState *env, int csrno,
     }
 
     if (ret_val) {
-        *ret_val = old_mip;
+     /* The xip CSR appears hardwired to zero in CLIC mode. (Section 4.3) */
+        if (riscv_clic_is_clic_mode(env)) {
+            *ret_val = 0;
+        } else {
+            *ret_val = old_mip;
+        }
     }
 
     return RISCV_EXCP_NONE;
@@ -2470,6 +2475,7 @@ static RISCVException rmw_sie(CPURISCVState *env, int csrno,
 
     return ret;
 }
+
 static RISCVException rmw_sieh(CPURISCVState *env, int csrno,
                                target_ulong *ret_val,
                                target_ulong new_val, target_ulong wr_mask)
@@ -2641,6 +2647,18 @@ static RISCVException rmw_vsiph(CPURISCVState *env, int csrno,
 
     return ret;
 }
+
+// if (riscv_cpu_virt_enabled(env)) {
+//     ret = rmw_vsip(env, CSR_VSIP, ret_value, new_value, write_mask);
+// } else {
+//     /* The xip CSR appears hardwired to zero in CLIC mode. (Section 4.3) */
+//     if (riscv_clic_is_clic_mode(env)) {
+//         *ret_value = 0;
+//         return 0;
+//     }
+//     ret = rmw_mip(env, CSR_MSTATUS, ret_value, new_value,
+//                   write_mask & env->mideleg & sip_writable_mask);
+// }
 
 static RISCVException rmw_sip64(CPURISCVState *env, int csrno,
                                 uint64_t *ret_val,
