@@ -206,6 +206,7 @@ struct CPUArchState {
 
     uint64_t miclaim;
     uint64_t mintstatus; /* clic-spec */
+    target_ulong mintthresh; /* clic-spec */
 
     uint64_t mie;
     uint64_t mideleg;
@@ -217,6 +218,7 @@ struct CPUArchState {
     target_ulong stvec;
     target_ulong sepc;
     target_ulong scause;
+    target_ulong sintthresh; /* clic-spec */
 
     target_ulong mtvec;
     target_ulong mepc;
