@@ -42,6 +42,7 @@
 #define RISCV_CPU_TYPE_SUFFIX "-" TYPE_RISCV_CPU
 #define RISCV_CPU_TYPE_NAME(name) (name RISCV_CPU_TYPE_SUFFIX)
 #define CPU_RESOLVING_TYPE TYPE_RISCV_CPU
+#define CPU_INTERRUPT_CLIC CPU_INTERRUPT_TGT_EXT_0
 
 #define TYPE_RISCV_CPU_ANY              RISCV_CPU_TYPE_NAME("any")
 #define TYPE_RISCV_CPU_BASE32           RISCV_CPU_TYPE_NAME("rv32")
@@ -378,6 +379,7 @@ struct CPUArchState {
     bool vstime_irq;
 
     void *clic;       /* clic interrupt controller */
+    uint64_t exccode; /* clic irq encode */
 
     hwaddr kernel_addr;
     hwaddr fdt_addr;
