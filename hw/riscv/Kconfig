@@ -84,3 +84,10 @@ config SPIKE
     select HTIF
     select RISCV_ACLINT
     select SIFIVE_PLIC
+
+config SMARTL
+    bool
+    select RISCV_CLIC
+    select THEAD_CLINT
+    select THEAD_UART
+    select THEAD_TIMER
