@@ -79,6 +79,8 @@ struct QTestState
     int expected_status;
     bool big_endian;
     bool irq_level[MAX_IRQ];
+    /* FIXME: mark arbitration result */
+    bool is_delivered[MAX_IRQ];
     GString *rx;
     QTestTransportOps ops;
     GList *pending_events;
@@ -474,6 +476,7 @@ QTestState *qtest_init_without_qmp_handshake(const char *extra_args)
     s->rx = g_string_new("");
     for (i = 0; i < MAX_IRQ; i++) {
         s->irq_level[i] = false;
+        s->is_delivered[i] = false;
     }
 
     /*
@@ -656,6 +659,8 @@ redo:
 
         if (strcmp(words[1], "raise") == 0) {
             s->irq_level[irq] = true;
+        } else if (strcmp(words[1], "delivered") == 0) {
+            s->is_delivered[irq] = true;
         } else {
             s->irq_level[irq] = false;
         }
@@ -932,6 +937,11 @@ bool qtest_get_irq(QTestState *s, int num)
     qtest_inb(s, 0);
 
     return s->irq_level[num];
+}
+
+bool qtest_irq_delivered(QTestState *s, int num)
+{
+    return s->is_delivered[num];
 }
 
 void qtest_module_load(QTestState *s, const char *prefix, const char *libname)
