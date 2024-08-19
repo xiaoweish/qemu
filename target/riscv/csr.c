@@ -30,6 +30,10 @@
 #include "qemu/guest-random.h"
 #include "qapi/error.h"
 
+#if !defined(CONFIG_USER_ONLY)
+#include "hw/intc/riscv_clic.h"
+#endif
+
 /* CSR function table public API */
 void riscv_get_csr_ops(int csrno, riscv_csr_operations *ops)
 {
@@ -1805,16 +1809,19 @@ static RISCVException rmw_mie64(CPURISCVState *env, int csrno,
                                 uint64_t *ret_val,
                                 uint64_t new_val, uint64_t wr_mask)
 {
-    uint64_t mask = wr_mask & all_ints;
+    /* Access to xie will be ignored in CLIC mode and will not trap. */
+    if (!riscv_clic_is_clic_mode(env)) {
+        uint64_t mask = wr_mask & all_ints;
 
-    if (ret_val) {
-        *ret_val = env->mie;
-    }
+        if (ret_val) {
+            *ret_val = env->mie;
+        }
 
-    env->mie = (env->mie & ~mask) | (new_val & mask);
+        env->mie = (env->mie & ~mask) | (new_val & mask);
 
-    if (!riscv_has_ext(env, RVH)) {
-        env->mie &= ~((uint64_t)HS_MODE_INTERRUPTS);
+        if (!riscv_has_ext(env, RVH)) {
+            env->mie &= ~((uint64_t)HS_MODE_INTERRUPTS);
+        }
     }
 
     return RISCV_EXCP_NONE;
@@ -2906,13 +2913,13 @@ static int read_mintstatus(CPURISCVState *env, int csrno, target_ulong *val)
 static int read_mintthresh(CPURISCVState *env, int csrno, target_ulong *val)
 {
     *val = env->mintthresh;
-    return 0;
+    return RISCV_EXCP_NONE;
 }
 
 static int write_mintthresh(CPURISCVState *env, int csrno, target_ulong val)
 {
     env->mintthresh = val;
-    return 0;
+    return RISCV_EXCP_NONE;
 }
 
 /* Supervisor Trap Setup */
@@ -3059,7 +3066,10 @@ static RISCVException rmw_sie64(CPURISCVState *env, int csrno,
             *ret_val |= env->sie & nalias_mask;
         }
 
-        env->sie = (env->sie & ~sie_mask) | (new_val & sie_mask);
+        /* Writes to xie will be ignored in CLIC mode and will not trap. */
+        if (!riscv_clic_is_clic_mode(env)) {
+            env->sie = (env->sie & ~sie_mask) | (new_val & sie_mask);
+        }
     }
 
     return ret;
@@ -3337,13 +3347,13 @@ static int read_sintstatus(CPURISCVState *env, int csrno, target_ulong *val)
 static int read_sintthresh(CPURISCVState *env, int csrno, target_ulong *val)
 {
     *val = env->sintthresh;
-    return 0;
+    return RISCV_EXCP_NONE;
 }
 
 static int write_sintthresh(CPURISCVState *env, int csrno, target_ulong val)
 {
     env->sintthresh = val;
-    return 0;
+    return RISCV_EXCP_NONE;
 }
 
 /* Supervisor Protection and Translation */
