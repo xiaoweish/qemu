@@ -36,6 +36,7 @@
 typedef struct CPUArchState CPURISCVState;
 
 #define CPU_RESOLVING_TYPE TYPE_RISCV_CPU
+#define CPU_INTERRUPT_CLIC CPU_INTERRUPT_TGT_EXT_0
 
 #if defined(TARGET_RISCV32)
 # define TYPE_RISCV_CPU_BASE            TYPE_RISCV_CPU_BASE32
@@ -465,6 +466,7 @@ struct CPUArchState {
     bool vstime_irq;
 
     void *clic;       /* clic interrupt controller */
+    uint32_t exccode; /* clic irq encode */
 
     hwaddr kernel_addr;
     hwaddr fdt_addr;
