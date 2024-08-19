@@ -153,6 +153,7 @@
 #define CSR_MIE             0x304
 #define CSR_MTVEC           0x305
 #define CSR_MCOUNTEREN      0x306
+#define CSR_MTVT            0x307 /* clic-spec-draft */
 
 /* 32-bit only */
 #define CSR_MSTATUSH        0x310
@@ -192,6 +193,7 @@
 #define CSR_SIE             0x104
 #define CSR_STVEC           0x105
 #define CSR_SCOUNTEREN      0x106
+#define CSR_STVT            0x107 /* clic-spec-draft */
 
 /* Supervisor Configuration CSRs */
 #define CSR_SENVCFG         0x10A
