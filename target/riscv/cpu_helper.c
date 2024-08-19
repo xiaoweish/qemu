@@ -24,6 +24,7 @@
 #include "internals.h"
 #include "pmu.h"
 #include "exec/exec-all.h"
+#include "exec/cpu_ldst.h"
 #include "exec/page-protection.h"
 #include "instmap.h"
 #include "tcg/tcg-op.h"
@@ -33,6 +34,7 @@
 #include "cpu_bits.h"
 #include "debug.h"
 #include "tcg/oversized-guest.h"
+#include "hw/intc/riscv_clic.h"
 
 int riscv_env_mmu_index(CPURISCVState *env, bool ifetch)
 {
@@ -428,6 +430,20 @@ int riscv_cpu_vsirq_pending(CPURISCVState *env)
                                     (irqs | irqs_f_vs), env->hviprio);
 }
 
+static int riscv_cpu_local_irq_mode_enabled(CPURISCVState *env, int mode)
+{
+    switch (mode) {
+    case PRV_M:
+        return env->priv < PRV_M ||
+            (env->priv == PRV_M && get_field(env->mstatus, MSTATUS_MIE));
+    case PRV_S:
+        return env->priv < PRV_S ||
+            (env->priv == PRV_S && get_field(env->mstatus, MSTATUS_SIE));
+    default:
+        return false;
+    }
+}
+
 static int riscv_cpu_local_irq_pending(CPURISCVState *env)
 {
     uint64_t irqs, pending, mie, hsie, vsie, irqs_f, irqs_f_vs;
@@ -502,6 +518,18 @@ bool riscv_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
         int interruptno = riscv_cpu_local_irq_pending(env);
         if (interruptno >= 0) {
             cs->exception_index = RISCV_EXCP_INT_FLAG | interruptno;
+            riscv_cpu_do_interrupt(cs);
+            return true;
+        }
+    }
+    if (interrupt_request & CPU_INTERRUPT_CLIC) {
+        RISCVCPU *cpu = RISCV_CPU(cs);
+        CPURISCVState *env = &cpu->env;
+        int mode = get_field(env->exccode, RISCV_EXCP_CLIC_MODE);
+        int enabled = riscv_cpu_local_irq_mode_enabled(env, mode);
+        if (enabled) {
+            cs->exception_index = RISCV_EXCP_CLIC | env->exccode;
+            cs->interrupt_request = cs->interrupt_request & ~CPU_INTERRUPT_CLIC;
             riscv_cpu_do_interrupt(cs);
             return true;
         }
@@ -1641,6 +1669,60 @@ static target_ulong riscv_transformed_insn(CPURISCVState *env,
     return xinsn;
 }
 
+static target_ulong riscv_intr_pc(CPURISCVState *env, target_ulong tvec,
+                                  target_ulong tvt, bool async,
+                                  int cause, int mode)
+{
+    int mode1 = tvec & XTVEC_MODE;
+    int mode2 = tvec & XTVEC_FULL_MODE;
+
+    if (!async) {
+        return tvec & XTVEC_OBASE;
+    }
+    /* bits [1:0] encode mode; 0 = direct, 1 = vectored, 2 >= reserved */
+    switch (mode1) {
+    case XTVEC_CLINT_DIRECT:
+        return tvec & XTVEC_OBASE;
+    case XTVEC_CLINT_VECTORED:
+        return (tvec & XTVEC_OBASE) + cause * 4;
+    default:
+        if (env->clic && (mode2 == XTVEC_CLIC)) {
+            /* Non-vectored, clicintattr[i].shv = 0 || cliccfg.nvbits = 0 */
+            if (!riscv_clic_shv_interrupt(env->clic, cause)) {
+                /* NBASE = mtvec[XLEN-1:6]<<6 */
+                return tvec & XTVEC_NBASE;
+            } else {
+                /*
+                 * pc := M[TBASE + XLEN/8 * exccode)] & ~1,
+                 * TBASE = mtvt[XLEN-1:6]<<6
+                 */
+                int size = TARGET_LONG_BITS / 8;
+                target_ulong tbase = (tvt & XTVEC_NBASE) + size * cause;
+                void *host = tlb_vaddr_to_host(env, tbase, MMU_DATA_LOAD, mode);
+                if (host != NULL) {
+                    target_ulong new_pc = tbase;
+                    if (!riscv_clic_use_jump_table(env->clic)) {
+                        /*
+                         * Standard CLIC: the vector entry is a function pointer
+                         * so look up the destination.
+                         */
+                        new_pc = ldn_p(host, size);
+                        host = tlb_vaddr_to_host(env, new_pc,
+                                                 MMU_INST_FETCH, mode);
+                    }
+                    if (host) {
+                        return new_pc;
+                    }
+                }
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "CLIC: load trap handler error!\n");
+                exit(1);
+            }
+        }
+        g_assert_not_reached();
+    }
+}
+
 /*
  * Handle Traps
  *
@@ -1654,12 +1736,14 @@ void riscv_cpu_do_interrupt(CPUState *cs)
     bool virt = env->virt_enabled;
     bool write_gva = false;
     uint64_t s;
+    int mode, level, irq;
 
     /*
      * cs->exception is 32-bits wide unlike mcause which is XLEN-bits wide
      * so we mask off the MSB and separate into trap type and cause.
      */
-    bool async = !!(cs->exception_index & RISCV_EXCP_INT_FLAG);
+    bool clic = !!(cs->exception_index & RISCV_EXCP_CLIC);
+    bool async = !!(cs->exception_index & RISCV_EXCP_INT_FLAG) || clic;
     target_ulong cause = cs->exception_index & RISCV_EXCP_INT_MASK;
     uint64_t deleg = async ? env->mideleg : env->medeleg;
     bool s_injected = env->mvip & (1 << cause) & env->mvien &&
@@ -1746,6 +1830,28 @@ void riscv_cpu_do_interrupt(CPUState *cs)
         }
     }
 
+    if (clic) {
+        riscv_clic_decode_exccode(cause, &mode, &level, &irq);
+        cause = irq | get_field(env->mstatus, MSTATUS_MPP) << XCAUSE_XPP_SHIFT;
+        switch (mode) {
+        case PRV_M:
+            cause |= get_field(env->mintstatus, MINTSTATUS_MIL)
+                     << XCAUSE_XPIL_SHIFT;
+            cause |= get_field(env->mstatus, MSTATUS_MIE) << XCAUSE_XPIE_SHIFT;
+            env->mintstatus = set_field(env->mintstatus, MINTSTATUS_MIL, level);
+            break;
+        case PRV_S:
+            cause |= get_field(env->mintstatus, MINTSTATUS_SIL)
+                     << XCAUSE_XPIL_SHIFT;
+            cause |= get_field(env->mstatus, MSTATUS_SPIE) << XCAUSE_XPIE_SHIFT;
+            env->mintstatus = set_field(env->mintstatus, MINTSTATUS_SIL, level);
+            break;
+        }
+    } else {
+        mode = env->priv <= PRV_S && cause < 64 &&
+            ((deleg >> cause) & 1 || s_injected || vs_injected) ? PRV_S : PRV_M;
+    }
+
     trace_riscv_trap(env->mhartid, async, cause, env->pc, tval,
                      riscv_cpu_get_trap_name(cause, async));
 
@@ -1755,8 +1861,7 @@ void riscv_cpu_do_interrupt(CPUState *cs)
                   __func__, env->mhartid, async, cause, env->pc, tval,
                   riscv_cpu_get_trap_name(cause, async));
 
-    if (env->priv <= PRV_S && cause < 64 &&
-        (((deleg >> cause) & 1) || s_injected || vs_injected)) {
+    if (PRV_S == mode) {
         /* handle the trap in S-mode */
         if (riscv_has_ext(env, RVH)) {
             uint64_t hdeleg = async ? env->hideleg : env->hedeleg;
@@ -1765,7 +1870,7 @@ void riscv_cpu_do_interrupt(CPUState *cs)
                 (((hdeleg >> cause) & 1) || vs_injected)) {
                 /* Trap to VS mode */
                 /*
-                 * See if we need to adjust cause. Yes if its VS mode interrupt
+                 * See if we need to adjust cause. Yes if it's VS mode interrupt
                  * no if hypervisor has delegated one of hs mode's interrupt
                  */
                 if (async && (cause == IRQ_VS_TIMER || cause == IRQ_VS_SOFT ||
@@ -1796,13 +1901,15 @@ void riscv_cpu_do_interrupt(CPUState *cs)
         s = set_field(s, MSTATUS_SPP, env->priv);
         s = set_field(s, MSTATUS_SIE, 0);
         env->mstatus = s;
-        env->scause = cause | ((target_ulong)async << (TARGET_LONG_BITS - 1));
+        if (async) {
+            env->scause = cause | SCAUSE_INT;
+        }
         env->sepc = env->pc;
         env->stval = tval;
         env->htval = htval;
         env->htinst = tinst;
-        env->pc = (env->stvec >> 2 << 2) +
-                  ((async && (env->stvec & 3) == 1) ? cause * 4 : 0);
+        env->pc = riscv_intr_pc(env, env->stvec, env->stvt, async,
+                                cause & SCAUSE_EXCCODE, PRV_S);
         riscv_cpu_set_mode(env, PRV_S, virt);
     } else {
         /* handle the trap in M-mode */
@@ -1827,13 +1934,15 @@ void riscv_cpu_do_interrupt(CPUState *cs)
         s = set_field(s, MSTATUS_MPP, env->priv);
         s = set_field(s, MSTATUS_MIE, 0);
         env->mstatus = s;
-        env->mcause = cause | ~(((target_ulong)-1) >> async);
+        if (async) {
+            env->mcause = cause | MCAUSE_INT;
+        }
         env->mepc = env->pc;
         env->mtval = tval;
         env->mtval2 = mtval2;
         env->mtinst = tinst;
-        env->pc = (env->mtvec >> 2 << 2) +
-                  ((async && (env->mtvec & 3) == 1) ? cause * 4 : 0);
+        env->pc = riscv_intr_pc(env, env->mtvec, env->mtvt, async,
+                                cause & MCAUSE_EXCCODE, PRV_M);
         riscv_cpu_set_mode(env, PRV_M, virt);
     }
 
