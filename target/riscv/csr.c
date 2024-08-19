@@ -578,6 +578,16 @@ static RISCVException debug(CPURISCVState *env, int csrno)
 
     return RISCV_EXCP_ILLEGAL_INST;
 }
+
+static int clic(CPURISCVState *env, int csrno)
+{
+    if (env->clic) {
+        return RISCV_EXCP_NONE;
+    }
+
+    return RISCV_EXCP_ILLEGAL_INST;
+}
+
 #endif
 
 static RISCVException seed(CPURISCVState *env, int csrno)
@@ -2887,6 +2897,12 @@ static RISCVException rmw_mviph(CPURISCVState *env, int csrno,
     return ret;
 }
 
+static int read_mintstatus(CPURISCVState *env, int csrno, target_ulong *val)
+{
+    *val = env->mintstatus;
+    return RISCV_EXCP_NONE;
+}
+
 /* Supervisor Trap Setup */
 static RISCVException read_sstatus_i128(CPURISCVState *env, int csrno,
                                         Int128 *val)
@@ -3296,6 +3312,14 @@ static RISCVException rmw_siph(CPURISCVState *env, int csrno,
     }
 
     return ret;
+}
+
+static int read_sintstatus(CPURISCVState *env, int csrno, target_ulong *val)
+{
+    /* sintstatus is a filtered view of mintstatus with the PRV_M removed */
+    target_ulong mask = SINTSTATUS_SIL | SINTSTATUS_UIL;
+    *val = env->mintstatus & mask;
+    return RISCV_EXCP_NONE;
 }
 
 /* Supervisor Protection and Translation */
@@ -5594,6 +5618,13 @@ riscv_csr_operations csr_ops[CSR_TABLE_SIZE] = {
                              write_mhpmcounterh                         },
     [CSR_MHPMCOUNTER31H] = { "mhpmcounter31h", mctr32,  read_hpmcounterh,
                              write_mhpmcounterh                         },
+
+    /* Machine Mode Core Level Interrupt Controller */
+    [CSR_MINTSTATUS]     = { "mintstatus", clic,  read_mintstatus       },
+
+    /* Supervisor Mode Core Level Interrupt Controller */
+    [CSR_SINTSTATUS]     = { "sintstatus", clic,  read_sintstatus       },
+
     [CSR_SCOUNTOVF]      = { "scountovf", sscofpmf,  read_scountovf,
                              .min_priv_ver = PRIV_VERSION_1_12_0 },
 
