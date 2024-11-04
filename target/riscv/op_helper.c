@@ -25,7 +25,11 @@
 #include "exec/cpu_ldst.h"
 #include "exec/helper-proto.h"
 
-/* Exceptions processing helpers */
+#if !defined(CONFIG_USER_ONLY)
+#include "hw/intc/riscv_clic.h"
+#endif
+
+/* Exception processing helpers */
 G_NORETURN void riscv_raise_exception(CPURISCVState *env,
                                       uint32_t exception, uintptr_t pc)
 {
@@ -259,6 +263,7 @@ void helper_cbo_inval(CPURISCVState *env, target_ulong address)
 
 #ifndef CONFIG_USER_ONLY
 
+/* Return from PRV_S interrupt */
 target_ulong helper_sret(CPURISCVState *env)
 {
     uint64_t mstatus;
@@ -292,8 +297,17 @@ target_ulong helper_sret(CPURISCVState *env)
     }
     env->mstatus = mstatus;
 
+    if (riscv_clic_is_clic_mode(env)) {
+        /* Update mintstatus with the PRV_S information */
+        target_ulong spil = get_field(env->scause, SCAUSE_SPIL);
+        env->mintstatus = set_field(env->mintstatus, MINTSTATUS_SIL, spil);
+        env->scause = set_field(env->scause, SCAUSE_SPIE, 1);
+        env->scause = set_field(env->scause, SCAUSE_SPP, PRV_U);
+        riscv_clic_get_next_interrupt(env->clic);
+    }
+
     if (riscv_has_ext(env, RVH) && !env->virt_enabled) {
-        /* We support Hypervisor extensions and virtulisation is disabled */
+        /* We support Hypervisor extensions and virtualization is disabled */
         target_ulong hstatus = env->hstatus;
 
         prev_virt = get_field(hstatus, HSTATUS_SPV);
@@ -312,6 +326,7 @@ target_ulong helper_sret(CPURISCVState *env)
     return retpc;
 }
 
+/* Return from PRV_M interrupt */
 target_ulong helper_mret(CPURISCVState *env)
 {
     if (!(env->priv >= PRV_M)) {
@@ -343,6 +358,16 @@ target_ulong helper_mret(CPURISCVState *env)
         mstatus = set_field(mstatus, MSTATUS_MPRV, 0);
     }
     env->mstatus = mstatus;
+
+    if (riscv_clic_is_clic_mode(env)) {
+        /* Update mintstatus with the PRV_M information */
+        target_ulong mpil = get_field(env->mcause, MCAUSE_MPIL);
+        env->mintstatus = set_field(env->mintstatus, MINTSTATUS_MIL, mpil);
+        env->mcause = set_field(env->mcause, MCAUSE_MPIE, 1);
+        env->mcause = set_field(env->mcause, MCAUSE_MPP,
+                                riscv_has_ext(env, RVU) ? PRV_U : PRV_M);
+        riscv_clic_get_next_interrupt(env->clic);
+    }
 
     if (riscv_has_ext(env, RVH) && prev_virt) {
         riscv_cpu_swap_hypervisor_regs(env);

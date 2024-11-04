@@ -49,7 +49,8 @@ struct QTest {
 
 bool qtest_allowed;
 
-static DeviceState *irq_intercept_dev;
+static DeviceState *irq_intercept_dev_in;
+static DeviceState *irq_intercept_dev_out;
 static FILE *qtest_log_fp;
 static QTest *qtest;
 static GString *inbuf;
@@ -60,6 +61,14 @@ static void (*qtest_server_send)(void*, const char*);
 static void *qtest_server_send_opaque;
 
 #define FMT_timeval "%.06f"
+
+/*
+ * Encoding for passing the specific IRQ information from an interrupt handler
+ * to QTest. This needs to support CLIC, which has a 12-bit interrupt number.
+ */
+#define QTEST_IRQN              0x0fff
+#define QTEST_IRQN_SHIFT        0
+#define QTEST_IRQ_LEVEL_SHIFT   12
 
 /**
  * DOC: QTest Protocol
@@ -311,6 +320,18 @@ void qtest_sendf(CharBackend *chr, const char *fmt, ...)
     va_end(ap);
 }
 
+/* Encode the IRQ number and level for QTest */
+int qtest_encode_irq(int irqn, int level)
+{
+    return (irqn & QTEST_IRQN) | (level << QTEST_IRQ_LEVEL_SHIFT);
+}
+
+static void qtest_decode_irq(int value, int *irqn, int *level)
+{
+    *irqn = value & QTEST_IRQN;
+    *level = value >> QTEST_IRQ_LEVEL_SHIFT;
+}
+
 static void qtest_irq_handler(void *opaque, int n, int level)
 {
     qemu_irq old_irq = *(qemu_irq *)opaque;
@@ -320,6 +341,16 @@ static void qtest_irq_handler(void *opaque, int n, int level)
         CharBackend *chr = &qtest->qtest_chr;
         irq_levels[n] = level;
         qtest_send_prefix(chr);
+        if (level > 1) {
+            int delivered_irq_num, pin_level;
+            qtest_decode_irq(level, &delivered_irq_num, &pin_level);
+            qtest_sendf(chr, "IRQ %s %d\n",
+                        "delivered", delivered_irq_num);
+            qtest_send_prefix(chr);
+            qtest_sendf(chr, "IRQ %s %d\n",
+                        pin_level ? "raise" : "lower", n);
+            return;
+        }
         qtest_sendf(chr, "IRQ %s %d\n",
                     level ? "raise" : "lower", n);
     }
@@ -369,6 +400,7 @@ static void qtest_process_command(CharBackend *chr, gchar **words)
         bool is_named;
         bool is_outbound;
         bool interception_succeeded = false;
+        bool interception_duplicated = false;
 
         g_assert(words[1]);
         is_named = words[2] != NULL;
@@ -386,38 +418,46 @@ static void qtest_process_command(CharBackend *chr, gchar **words)
             return;
         }
 
-        if (irq_intercept_dev) {
-            qtest_send_prefix(chr);
-            if (irq_intercept_dev != dev) {
-                qtest_send(chr, "FAIL IRQ intercept already enabled\n");
-            } else {
-                qtest_send(chr, "OK\n");
-            }
-            return;
-        }
-
         QLIST_FOREACH(ngl, &dev->gpios, node) {
             /* We don't support inbound interception of named GPIOs yet */
             if (is_outbound) {
+                if (irq_intercept_dev_out) {
+                    if (irq_intercept_dev_out == dev) {
+                        interception_succeeded = true;
+                    } else {
+                        interception_duplicated = true;
+                    }
+                }
                 /* NULL is valid and matchable, for "unnamed GPIO" */
-                if (g_strcmp0(ngl->name, words[2]) == 0) {
+                else if (g_strcmp0(ngl->name, words[2]) == 0) {
                     int i;
                     for (i = 0; i < ngl->num_out; ++i) {
                         qtest_install_gpio_out_intercept(dev, ngl->name, i);
                     }
+                    irq_intercept_dev_out = dev;
                     interception_succeeded = true;
                 }
             } else {
-                qemu_irq_intercept_in(ngl->in, qtest_irq_handler,
-                                      ngl->num_in);
-                interception_succeeded = true;
+                if (irq_intercept_dev_in) {
+                    if (irq_intercept_dev_in == dev) {
+                        interception_succeeded = true;
+                    } else {
+                        interception_duplicated = true;
+                    }
+                } else {
+                    qemu_irq_intercept_in(ngl->in, qtest_irq_handler,
+                                          ngl->num_in);
+                    irq_intercept_dev_in = dev;
+                    interception_succeeded = true;
+                }
             }
         }
 
         qtest_send_prefix(chr);
         if (interception_succeeded) {
-            irq_intercept_dev = dev;
             qtest_send(chr, "OK\n");
+        } else if (interception_duplicated) {
+            qtest_send(chr, "FAIL IRQ intercept already enabled\n");
         } else {
             qtest_send(chr, "FAIL No intercepts installed\n");
         }

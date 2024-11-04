@@ -36,6 +36,7 @@
 typedef struct CPUArchState CPURISCVState;
 
 #define CPU_RESOLVING_TYPE TYPE_RISCV_CPU
+#define CPU_INTERRUPT_CLIC CPU_INTERRUPT_TGT_EXT_0
 
 #if defined(TARGET_RISCV32)
 # define TYPE_RISCV_CPU_BASE            TYPE_RISCV_CPU_BASE32
@@ -259,6 +260,8 @@ struct CPUArchState {
     bool software_seip;
 
     uint64_t miclaim;
+    uint64_t mintstatus; /* clic-spec */
+    target_ulong mintthresh; /* clic-spec */
 
     uint64_t mie;
     uint64_t mideleg;
@@ -280,10 +283,13 @@ struct CPUArchState {
     target_ulong medeleg;
 
     target_ulong stvec;
+    target_ulong stvt; /* clic-spec */
     target_ulong sepc;
     target_ulong scause;
+    target_ulong sintthresh; /* clic-spec */
 
     target_ulong mtvec;
+    target_ulong mtvt; /* clic-spec */
     target_ulong mepc;
     target_ulong mcause;
     target_ulong mtval;  /* since: priv-1.10.0 */
@@ -460,6 +466,9 @@ struct CPUArchState {
     QEMUTimer *stimer; /* Internal timer for S-mode interrupt */
     QEMUTimer *vstimer; /* Internal timer for VS-mode interrupt */
     bool vstime_irq;
+
+    void *clic;       /* clic interrupt controller */
+    uint32_t exccode; /* clic irq encode */
 
     hwaddr kernel_addr;
     hwaddr fdt_addr;
